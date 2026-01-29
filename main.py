@@ -1,43 +1,38 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
-from PyQt5.QtCore import QSize, Qt 
+import pygame
 
-import sys 
+# ---------------- CONFIG ----------------
+WIDTH, HEIGHT = 900, 600
+SIDEBAR_WIDTH = 200
 
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__();
-        self.setWindowTitle("Musializer")
-        self.setFixedSize(QSize(800, 600))
-        self.setStyleSheet("background-color: #10060A")
+BG_COLOR = (15, 8, 12)
+SIDEBAR_COLOR = (25, 12, 18)
+BTN_COLOR = (50, 25, 35)
+BTN_HOVER = (80, 35, 55)
+TEXT_COLOR = (240, 240, 240)
+ACCENT = (180, 80, 120)
 
-        # label 
-        self.heading = QLabel("Welcome to the Musializer....")
-        self.heading.setStyleSheet("""
-            QLabel{
-            color: #fff;
-            font-size = 16px;
-            font-weight:bold;
-            }
-        """)
-
-        #  layout management
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.heading, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        #container widget to hold the layout 
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
+MUSIC_DIR = "assets/musics"
+SUPPORTED = (".wav", ".mp3", ".ogg")
+RUNNING = True
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    # pygame setup
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    clock = pygame.time.Clock()
 
+    while RUNNING:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                RUNNING = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_q:
+                    RUNNING = False
 
-    window = MainWindow()
-    window.show()
+        screen.fill(BG_COLOR)
 
-    app.exec()
+        pygame.display.flip()
 
+        clock.tick(60)
 
-
+    pygame.quit()
