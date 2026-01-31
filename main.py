@@ -4,27 +4,27 @@ import numpy as np
 import sys
 import time
 import threading
-import glob
 import os
 
 # ---------------- CONFIG ----------------
 START_WIDTH, START_HEIGHT = 900, 600
 
-SIDEBAR_EXPANDED = 240
-SIDEBAR_COLLAPSED = 48
+SIDEBAR_WIDTH = 240  # fixed width
 
-BG_COLOR = (14, 10, 18)
-SIDEBAR_BG = (20, 16, 26)
-BUTTON_BG = (32, 26, 40)
-BUTTON_HOVER = (44, 36, 56)
-BUTTON_ACTIVE = (200, 95, 140)
+# 🎨 COLOR THEME
+BG_COLOR = (25, 25, 28)  # #19191C
+PRIMARY = (253, 53, 109)  # #FD356D
 
-BAR_COLOR = (200, 95, 140)
-CAP_COLOR = (240, 180, 210)
-TEXT_COLOR = (220, 220, 230)
-MUTED_TEXT = (150, 140, 170)
+SIDEBAR_BG = (32, 32, 38)
+BUTTON_BG = (45, 45, 54)
+BUTTON_HOVER = (65, 65, 78)
+BUTTON_ACTIVE = PRIMARY
 
-MUSIC_FILES = sorted(glob.glob("/home/alif/Downloads/musics/*.mp3"))
+BAR_COLOR = PRIMARY
+CAP_COLOR = (255, 160, 190)
+
+TEXT_COLOR = (235, 235, 240)
+MUTED_TEXT = (160, 160, 175)
 
 NUM_BARS = 40
 FFT_SIZE = 2048
@@ -32,23 +32,23 @@ BOTTOM_MARGIN = 70
 
 ATTACK = 0.75
 DECAY = 0.90
-
-CAP_DELAY = 0.85  # how closely caps follow bars (1 = instant)
-CAP_GRAVITY = 0.90  # how fast caps fall
+CAP_DELAY = 0.85
+CAP_GRAVITY = 0.90
 
 # --------- AUDIO STATE ---------
+playlist = []
+current_track_index = -1
+
 audio_ready = False
 audio_data = None
 sample_rate = None
-current_track_index = 0
-sidebar_open = True
 
 
 def load_audio(index):
     global audio_ready, audio_data, sample_rate
     audio_ready = False
 
-    path = MUSIC_FILES[index]
+    path = playlist[index]
     audio_data, sample_rate = librosa.load(path, sr=22050, mono=True)
 
     pygame.mixer.music.load(path)
@@ -58,52 +58,43 @@ def load_audio(index):
 
 
 def draw_sidebar(screen, font, active, mouse_pos):
-    width = SIDEBAR_EXPANDED if sidebar_open else SIDEBAR_COLLAPSED
     height = screen.get_height()
+    pygame.draw.rect(screen, SIDEBAR_BG, (0, 0, SIDEBAR_WIDTH, height))
 
-    pygame.draw.rect(screen, SIDEBAR_BG, (0, 0, width, height))
+    title = font.render("PLAYLIST", True, MUTED_TEXT)
+    screen.blit(title, (16, 16))
 
-    toggle = pygame.Rect(8, 8, 32, 32)
-    pygame.draw.rect(
-        screen,
-        BUTTON_BG if toggle.collidepoint(mouse_pos) else BUTTON_HOVER,
-        toggle,
-        border_radius=6,
-    )
-    pygame.draw.line(screen, TEXT_COLOR, (16, 18), (32, 18), 2)
-    pygame.draw.line(screen, TEXT_COLOR, (16, 26), (32, 26), 2)
-
-    if not sidebar_open:
-        return width
-
-    screen.blit(font.render("PLAYLIST", True, MUTED_TEXT), (16, 52))
-
-    y = 80
-    for i, path in enumerate(MUSIC_FILES):
+    y = 50
+    for i, path in enumerate(playlist):
         name = os.path.basename(path)[:26]
-        rect = pygame.Rect(12, y, width - 24, 36)
+        rect = pygame.Rect(12, y, SIDEBAR_WIDTH - 24, 36)
         hovered = rect.collidepoint(mouse_pos)
 
-        color = BUTTON_ACTIVE if i == active else BUTTON_HOVER if hovered else BUTTON_BG
-        pygame.draw.rect(screen, color, rect, border_radius=8)
-        screen.blit(font.render(name, True, TEXT_COLOR), (rect.x + 12, rect.y + 8))
-        y += 44
+        if i == active:
+            color = BUTTON_ACTIVE
+        elif hovered:
+            color = BUTTON_HOVER
+        else:
+            color = BUTTON_BG
 
-    return width
+        pygame.draw.rect(screen, color, rect, border_radius=8)
+        screen.blit(
+            font.render(name, True, TEXT_COLOR),
+            (rect.x + 12, rect.y + 8),
+        )
+        y += 44
 
 
 def get_clicked_track(mouse_pos):
-    if not sidebar_open:
-        return None
     x, y = mouse_pos
-    if x > SIDEBAR_EXPANDED:
+    if x > SIDEBAR_WIDTH:
         return None
-    index = (y - 80) // 44
-    return index if 0 <= index < len(MUSIC_FILES) else None
+    index = (y - 50) // 44
+    return index if 0 <= index < len(playlist) else None
 
 
 def main():
-    global current_track_index, sidebar_open
+    global current_track_index
 
     pygame.init()
     pygame.mixer.init(frequency=22050)
@@ -116,10 +107,6 @@ def main():
 
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Inter", 16)
-
-    threading.Thread(
-        target=load_audio, args=(current_track_index,), daemon=True
-    ).start()
 
     bar_heights = np.zeros(NUM_BARS)
     cap_heights = np.zeros(NUM_BARS)
@@ -136,10 +123,24 @@ def main():
             if event.type == pygame.QUIT:
                 RUNNING = False
 
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if pygame.Rect(8, 8, 32, 32).collidepoint(mouse_pos):
-                    sidebar_open = not sidebar_open
+            # 🎯 Drag & Drop MP3
+            if event.type == pygame.DROPFILE:
+                path = event.file
+                if path.lower().endswith(".mp3"):
+                    playlist.append(path)
 
+                    if current_track_index == -1:
+                        current_track_index = 0
+                        threading.Thread(
+                            target=load_audio,
+                            args=(current_track_index,),
+                            daemon=True,
+                        ).start()
+                        bar_heights[:] = 0
+                        cap_heights[:] = 0
+                        start_time = time.time()
+
+            if event.type == pygame.MOUSEBUTTONDOWN:
                 clicked = get_clicked_track(mouse_pos)
                 if clicked is not None and clicked != current_track_index:
                     current_track_index = clicked
@@ -152,8 +153,9 @@ def main():
                     cap_heights[:] = 0
                     start_time = time.time()
 
-        if audio_ready and not pygame.mixer.music.get_busy():
-            current_track_index = (current_track_index + 1) % len(MUSIC_FILES)
+        # Auto-play next track
+        if audio_ready and not pygame.mixer.music.get_busy() and playlist:
+            current_track_index = (current_track_index + 1) % len(playlist)
             threading.Thread(
                 target=load_audio,
                 args=(current_track_index,),
@@ -166,13 +168,18 @@ def main():
         WIDTH, HEIGHT = screen.get_size()
         screen.fill(BG_COLOR)
 
-        sidebar_width = draw_sidebar(screen, font, current_track_index, mouse_pos)
+        draw_sidebar(screen, font, current_track_index, mouse_pos)
+
+        if not playlist:
+            msg = font.render("Drag & drop MP3 files here", True, MUTED_TEXT)
+            screen.blit(msg, msg.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
+            pygame.display.flip()
+            clock.tick(30)
+            continue
 
         if not audio_ready:
-            screen.blit(
-                font.render("Loading…", True, TEXT_COLOR),
-                (WIDTH // 2 - 30, HEIGHT // 2),
-            )
+            loading = font.render("Loading…", True, TEXT_COLOR)
+            screen.blit(loading, loading.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
             pygame.display.flip()
             clock.tick(30)
             continue
@@ -185,10 +192,10 @@ def main():
         idx = int(elapsed * sample_rate)
 
         MAX_HEIGHT = int(HEIGHT * 0.5)
-        vis_width = WIDTH - sidebar_width
+        vis_width = WIDTH - SIDEBAR_WIDTH
         spacing = (vis_width * 0.85) / NUM_BARS
         bar_width = int(spacing * 0.5)
-        start_x = sidebar_width + (vis_width - spacing * NUM_BARS) / 2
+        start_x = SIDEBAR_WIDTH + (vis_width - spacing * NUM_BARS) / 2
         baseline_y = HEIGHT - BOTTOM_MARGIN
 
         if 0 <= idx < len(audio_data) - FFT_SIZE:
@@ -217,7 +224,6 @@ def main():
                 else:
                     bar_heights[i] *= DECAY
 
-                # Cap follows bar velocity with slight delay
                 cap_heights[i] = cap_heights[i] * CAP_DELAY + bar_heights[i] * (
                     1 - CAP_DELAY
                 )
