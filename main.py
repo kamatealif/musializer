@@ -1,269 +1,192 @@
 import pygame
 import librosa
 import numpy as np
-import sys
 import time
 import threading
-import os
+import colorsys
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # ---------------- CONFIG ----------------
-START_WIDTH, START_HEIGHT = 900, 600
-
-SIDEBAR_WIDTH = 240  # fixed width
-
-# 🎨 COLOR THEME
-BG_COLOR = (25, 25, 28)  # #19191C
-PRIMARY = (253, 53, 109)  # #FD356D
-
-SIDEBAR_BG = (32, 32, 38)
-BUTTON_BG = (45, 45, 54)
-BUTTON_HOVER = (65, 65, 78)
-BUTTON_ACTIVE = PRIMARY
-
-BAR_COLOR = PRIMARY
-CAP_COLOR = (255, 160, 190)
-
-TEXT_COLOR = (235, 235, 240)
-MUTED_TEXT = (160, 160, 175)
-
-NUM_BARS = 40
+START_WIDTH, START_HEIGHT = 1280, 720
+BG_COLOR = (10, 10, 12)
+NUM_BARS = 50
 FFT_SIZE = 2048
-BOTTOM_MARGIN = 70
+FPS = 60
 
-ATTACK = 0.75
-DECAY = 0.90
-CAP_DELAY = 0.85
-CAP_GRAVITY = 0.90
+# MOTION (RELAXED / BUTTERY)
+SPRING_K = 0.10
+DAMPING = 0.88
 
-# --------- AUDIO STATE ---------
-playlist = []
-current_track_index = -1
+# AMPLITUDE CONTROL
+CEILING_MARGIN = 2
+EASING_STRENGTH = 3.0
 
-audio_ready = False
-audio_data = None
-sample_rate = None
+# NEIGHBOR COUPLING
+COUPLING = 0.15
 
-
-def load_audio(index):
-    global audio_ready, audio_data, sample_rate
-    audio_ready = False
-
-    path = playlist[index]
-    audio_data, sample_rate = librosa.load(path, sr=22050, mono=True)
-
-    pygame.mixer.music.load(path)
-    pygame.mixer.music.play()
-
-    audio_ready = True
+# GLOW
+GLOW_LAYERS = 4
+GLOW_ALPHA = 38
 
 
-def draw_sidebar(screen, font, active, mouse_pos):
-    height = screen.get_height()
-    pygame.draw.rect(screen, SIDEBAR_BG, (0, 0, SIDEBAR_WIDTH, height))
+class Visualizer:
+    def __init__(self):
+        pygame.init()
+        pygame.mixer.init()
 
-    title = font.render("PLAYLIST", True, MUTED_TEXT)
-    screen.blit(title, (16, 16))
-
-    y = 50
-    for i, path in enumerate(playlist):
-        name = os.path.basename(path)[:26]
-        rect = pygame.Rect(12, y, SIDEBAR_WIDTH - 24, 36)
-        hovered = rect.collidepoint(mouse_pos)
-
-        if i == active:
-            color = BUTTON_ACTIVE
-        elif hovered:
-            color = BUTTON_HOVER
-        else:
-            color = BUTTON_BG
-
-        pygame.draw.rect(screen, color, rect, border_radius=8)
-        screen.blit(
-            font.render(name, True, TEXT_COLOR),
-            (rect.x + 12, rect.y + 8),
+        self.screen = pygame.display.set_mode(
+            (START_WIDTH, START_HEIGHT),
+            pygame.RESIZABLE
         )
-        y += 44
+        pygame.display.set_caption("Luma Visualizer")
+        self.clock = pygame.time.Clock()
 
+        self.audio_data = None
+        self.sample_rate = None
+        self.audio_ready = False
 
-def get_clicked_track(mouse_pos):
-    x, y = mouse_pos
-    if x > SIDEBAR_WIDTH:
-        return None
-    index = (y - 50) // 44
-    return index if 0 <= index < len(playlist) else None
+        self.heights = np.zeros(NUM_BARS)
+        self.velocities = np.zeros(NUM_BARS)
 
+        self.energy_history = np.zeros(40)
+        self.energy_idx = 0
 
-def main():
-    global current_track_index
+    # ---------------- AUDIO ----------------
+    def load_audio(self, path):
+        try:
+            self.audio_ready = False
+            self.audio_data, self.sample_rate = librosa.load(path, sr=22050)
 
-    pygame.init()
-    pygame.mixer.init(frequency=22050)
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.play()
+            self.start_time = time.time()
 
-    screen = pygame.display.set_mode(
-        (START_WIDTH, START_HEIGHT),
-        pygame.RESIZABLE | pygame.SCALED,
-    )
-    pygame.display.set_caption("Music Visualizer")
+            self.audio_ready = True
+        except Exception as e:
+            print("Audio load failed:", e)
 
-    clock = pygame.time.Clock()
-    font = pygame.font.SysFont("Inter", 16)
+    # ---------------- LOOP ----------------
+    def run(self):
+        running = True
+        while running:
+            W, H = self.screen.get_size()
+            self.screen.fill(BG_COLOR)
 
-    bar_heights = np.zeros(NUM_BARS)
-    cap_heights = np.zeros(NUM_BARS)
-
-    freqs = None
-    log_bins = None
-    start_time = time.time()
-
-    RUNNING = True
-    while RUNNING:
-        mouse_pos = pygame.mouse.get_pos()
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                RUNNING = False
-
-            # 🎯 Drag & Drop MP3
-            if event.type == pygame.DROPFILE:
-                path = event.file
-                if path.lower().endswith(".mp3"):
-                    playlist.append(path)
-
-                    if current_track_index == -1:
-                        current_track_index = 0
-                        threading.Thread(
-                            target=load_audio,
-                            args=(current_track_index,),
-                            daemon=True,
-                        ).start()
-                        bar_heights[:] = 0
-                        cap_heights[:] = 0
-                        start_time = time.time()
-
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                clicked = get_clicked_track(mouse_pos)
-                if clicked is not None and clicked != current_track_index:
-                    current_track_index = clicked
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                if event.type == pygame.DROPFILE:
                     threading.Thread(
-                        target=load_audio,
-                        args=(current_track_index,),
-                        daemon=True,
+                        target=self.load_audio,
+                        args=(event.file,),
+                        daemon=True
                     ).start()
-                    bar_heights[:] = 0
-                    cap_heights[:] = 0
-                    start_time = time.time()
 
-        # Auto-play next track
-        if audio_ready and not pygame.mixer.music.get_busy() and playlist:
-            current_track_index = (current_track_index + 1) % len(playlist)
-            threading.Thread(
-                target=load_audio,
-                args=(current_track_index,),
-                daemon=True,
-            ).start()
-            bar_heights[:] = 0
-            cap_heights[:] = 0
-            start_time = time.time()
+            if not self.audio_ready:
+                self.draw_ui("DROP AUDIO FILE", W, H)
+            elif not pygame.mixer.music.get_busy():
+                self.draw_ui("AUDIO FINISHED", W, H)
+            else:
+                self.render_bars(W, H)
 
-        WIDTH, HEIGHT = screen.get_size()
-        screen.fill(BG_COLOR)
-
-        draw_sidebar(screen, font, current_track_index, mouse_pos)
-
-        if not playlist:
-            msg = font.render("Drag & drop MP3 files here", True, MUTED_TEXT)
-            screen.blit(msg, msg.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
             pygame.display.flip()
-            clock.tick(30)
-            continue
+            self.clock.tick(FPS)
 
-        if not audio_ready:
-            loading = font.render("Loading…", True, TEXT_COLOR)
-            screen.blit(loading, loading.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
-            pygame.display.flip()
-            clock.tick(30)
-            continue
+        pygame.quit()
 
-        if freqs is None:
-            freqs = np.fft.rfftfreq(FFT_SIZE, 1 / sample_rate)
-            log_bins = np.logspace(np.log10(15), np.log10(12000), NUM_BARS + 1)
+    # ---------------- VISUALS ----------------
+    def render_bars(self, W, H):
+        elapsed = time.time() - self.start_time
+        idx = int(elapsed * self.sample_rate)
 
-        elapsed = time.time() - start_time
-        idx = int(elapsed * sample_rate)
+        if idx + FFT_SIZE >= len(self.audio_data):
+            return
 
-        MAX_HEIGHT = int(HEIGHT * 0.5)
-        vis_width = WIDTH - SIDEBAR_WIDTH
-        spacing = (vis_width * 0.85) / NUM_BARS
-        bar_width = int(spacing * 0.5)
-        start_x = SIDEBAR_WIDTH + (vis_width - spacing * NUM_BARS) / 2
-        baseline_y = HEIGHT - BOTTOM_MARGIN
+        frame = self.audio_data[idx:idx + FFT_SIZE]
+        spectrum = np.abs(np.fft.rfft(frame * np.hanning(FFT_SIZE)))
 
-        if 0 <= idx < len(audio_data) - FFT_SIZE:
-            frame = audio_data[idx : idx + FFT_SIZE]
-            spectrum = np.abs(np.fft.rfft(frame * np.hanning(FFT_SIZE)))
+        # ---- Adaptive normalization ----
+        energy = np.mean(spectrum)
+        self.energy_history[self.energy_idx] = energy
+        self.energy_idx = (self.energy_idx + 1) % len(self.energy_history)
+        adaptive_max = max(np.max(self.energy_history), 1e-6)
 
-            energies = np.zeros(NUM_BARS)
-            for i in range(NUM_BARS):
-                mask = (freqs >= log_bins[i]) & (freqs < log_bins[i + 1])
-                if not np.any(mask):
-                    energies[i] = 0.02
-                    continue
+        freqs = np.fft.rfftfreq(FFT_SIZE, 1 / self.sample_rate)
+        bins = np.logspace(np.log10(30), np.log10(12000), NUM_BARS + 1)
 
-                band = spectrum[mask]
-                base = np.mean(band) * 0.6 + np.max(band) * 0.4
-                bass_boost = 1.8 - (i / NUM_BARS)
-                energies[i] = base * bass_boost + 0.015
+        spacing = W / NUM_BARS
+        bar_w = spacing * 0.6
 
-            energies /= np.max(energies) + 1e-6
+        BASE_Y = H * 0.8
+        MAX_H = H * 0.5
+        SOFT_MAX = MAX_H - CEILING_MARGIN
 
-            for i, energy in enumerate(energies):
-                target = energy * MAX_HEIGHT
+        # --------- STEP 1: BUILD TARGETS ---------
+        targets = np.zeros(NUM_BARS)
 
-                if target > bar_heights[i]:
-                    bar_heights[i] = bar_heights[i] * (1 - ATTACK) + target * ATTACK
-                else:
-                    bar_heights[i] *= DECAY
+        for i in range(NUM_BARS):
+            mask = (freqs >= bins[i]) & (freqs < bins[i + 1])
+            raw = np.mean(spectrum[mask]) if np.any(mask) else 0
 
-                cap_heights[i] = cap_heights[i] * CAP_DELAY + bar_heights[i] * (
-                    1 - CAP_DELAY
+            norm = raw / adaptive_max
+            compressed = np.log1p(norm * 6) / np.log1p(6)
+
+            eased = 1 - np.exp(-compressed * EASING_STRENGTH)
+            targets[i] = eased * (1 + i / NUM_BARS * 1.2) * SOFT_MAX
+
+        # --------- STEP 2: NEIGHBOR COUPLING ---------
+        for i in range(1, NUM_BARS - 1):
+            targets[i] += COUPLING * (
+                targets[i - 1] + targets[i + 1] - 2 * targets[i]
+            )
+
+        # --------- STEP 3: APPLY PHYSICS + DRAW ---------
+        for i in range(NUM_BARS):
+            acc = (targets[i] - self.heights[i]) * SPRING_K - self.velocities[i] * DAMPING
+            self.velocities[i] += acc
+            self.heights[i] += self.velocities[i]
+
+            h = int(self.heights[i])
+            if h <= 1:
+                continue
+
+            x = i * spacing + (spacing - bar_w) / 2
+
+            hue = i / NUM_BARS
+            color = [
+                int(c * 255)
+                for c in colorsys.hsv_to_rgb(hue * 0.75, 0.7, 1.0)
+            ]
+
+            # ---- GLOW ----
+            for g in range(GLOW_LAYERS, 0, -1):
+                glow_h = h + g * 6
+                glow = pygame.Surface(
+                    (bar_w + g * 8, glow_h),
+                    pygame.SRCALPHA
+                )
+                glow.fill((*color, GLOW_ALPHA // g))
+                self.screen.blit(
+                    glow,
+                    (x - g * 4, BASE_Y - glow_h)
                 )
 
-                if cap_heights[i] > bar_heights[i]:
-                    cap_heights[i] *= CAP_GRAVITY
+            # ---- MAIN BAR ----
+            pygame.draw.rect(
+                self.screen,
+                color,
+                (int(x), int(BASE_Y - h), int(bar_w), h),
+                border_radius=int(bar_w // 2)
+            )
 
-                x = start_x + i * spacing + (spacing - bar_width) / 2
-
-                pygame.draw.rect(
-                    screen,
-                    BAR_COLOR,
-                    (
-                        int(x),
-                        int(baseline_y - bar_heights[i]),
-                        bar_width,
-                        int(bar_heights[i]),
-                    ),
-                    border_radius=6,
-                )
-
-                cap_h = 6
-                pygame.draw.rect(
-                    screen,
-                    CAP_COLOR,
-                    (
-                        int(x),
-                        int(baseline_y - cap_heights[i] - cap_h),
-                        bar_width,
-                        cap_h,
-                    ),
-                    border_radius=3,
-                )
-
-        pygame.display.flip()
-        clock.tick(60)
-
-    pygame.quit()
-    sys.exit()
+    # ---------------- UI ----------------
+    def draw_ui(self, text, W, H):
+        font = pygame.font.SysFont("sans-serif", 32)
+        surf = font.render(text, True, (80, 80, 90))
+        self.screen.blit(surf, surf.get_rect(center=(W // 2, H // 2)))
 
 
 if __name__ == "__main__":
-    main()
+    Visualizer().run()
