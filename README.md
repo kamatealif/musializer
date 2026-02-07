@@ -91,3 +91,5 @@ uv run main.py
 ```
 
 This will run the `main.py` script in the `src` directory.
+
+and the window will pop where you can drag drip the music files and see the music visualization 
